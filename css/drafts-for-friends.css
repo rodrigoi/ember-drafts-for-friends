@@ -4,9 +4,14 @@
 #col-right {
   width: 75%;
 }
-#draftsforfriends-postid {
+.posts {
   width: 100%;
 }
+
+.row-actions a {
+  cursor: pointer;
+}
+
 
 form.draftsforfriends-extend {
   display: none;
