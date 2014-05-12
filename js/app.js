@@ -16,12 +16,11 @@
   EmberDrafts.ApplicationAdapter = DS.RESTAdapter.extend({
     host: draftsForFriends.ajax_endpoint,
     buildURL: function (type, id) {
+      var url = this.host + '?action=ember_drafts_for_friends&type=' + type;
       if(!id) {
         type = Ember.String.pluralize(type);
-        return this.host + '?action=ember_drafts_for_friends&type=' + type;
-      }
-      var url = this.host + '?action=ember_drafts_for_friends&type=' + type;
-      if(id) {
+        url = this.host + '?action=ember_drafts_for_friends&type=' + type;
+      } else {
         url += "&id=" + id;
       }
       return url;
@@ -62,7 +61,15 @@
     }
   });
 
+  EmberDrafts.ApplicationController = Ember.Controller.extend({
+    notification: null,
+    notify: function (notification) {
+      this.set('notification', notification);
+    }
+  });
+  
   EmberDrafts.CreateController = Ember.ObjectController.extend({
+    needs: ['application'],
     units: [
       {title: 'seconds', value: 's'},
       {title: 'minutes', value: 'm'},
@@ -76,21 +83,46 @@
     actions: {
       create: function (){
         var draft = this.store.createRecord('draft', this.get('form'));
+        this.set('controllers.application.notification', {
+          type: 'success',
+          message: 'shit created successfulllllyyyyy!!!'
+        });
         return draft.save();
       }
     }
   });
   
   EmberDrafts.PostController = Ember.ObjectController.extend({
+    needs: ['application'],
     actions: {
       delete: function (){
         var post = this.get('model');
         post.deleteRecord();
+        this.set('controllers.application.notification', {
+          type: 'success',
+          message: 'shit deleted successfulllllyyyyy!!!'
+        });
         return post.save();
       }
     }
   });
 
+  EmberDrafts.NotificationView = Ember.View.extend({
+    templateName: 'notification',
+    notificationDidChange: function() {
+      var notification = this.get('notification');
+      if (notification !== null) {
+        this.$().slideDown();
+        var _this = this;
+        Ember.run.later(function(){
+          _this.$().slideUp(function(){
+            _this.set('notification', null);
+          });
+        }, 2000);
+      }
+    }.observes('notification')
+  });
+  
   EmberDrafts.CopyToClipboardComponent = Ember.Component.extend({
     tagName: 'a',
     classNames: ['copy-to-clipboard'],

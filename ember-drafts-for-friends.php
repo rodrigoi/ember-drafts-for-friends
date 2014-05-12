@@ -256,6 +256,7 @@ class EmberDraftsForFriends {
 
 	<script type="text/x-handlebars" data-template-name="application">
 		<h2><?php _e( 'Drafts for Friends', 'draftsforfriends' ); ?></h2>
+    {{view EmberDrafts.NotificationView notificationBinding="notification"}}
 		{{outlet}}
 	</script>
 
@@ -346,10 +347,12 @@ class EmberDraftsForFriends {
 		<?php _e( 'Copy to Clipboard', 'draftsforfriends' ) ;?>
 	</script>
 
-	<script type="text/x-handlebars" data-template-name="components/message">
-		<div id="message" class="updated below-h2">
-			<p>Here goes any messages</p>
-		</div>
+	<script type="text/x-handlebars" data-template-name="notification">
+    {{#if notification}}
+      <div class="updated below-h2">
+        <p>{{notification.message}}</p>
+      </div>
+    {{/if}}
 	</script>
 
 	<script type="text/x-handlebars" data-template-name="components/table-header">
