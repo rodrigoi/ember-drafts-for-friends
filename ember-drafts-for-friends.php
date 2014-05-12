@@ -11,6 +11,9 @@ Author URI: http://rodrigo.iloro.net/
 class EmberDraftsForFriends {
 	function __construct(){
 		add_action('init', array($this, 'init'));
+
+		register_activation_hook( __FILE__, array( $this, 'plugin_install' ) );
+		register_deactivation_hook( __FILE__, array( $this, 'plugin_uninstall' ) );
 	}
 
 	function init(){
@@ -22,6 +25,41 @@ class EmberDraftsForFriends {
 		add_action( 'admin_menu', array($this, 'admin_menu') );
 		add_action( 'admin_enqueue_scripts', array( $this, 'admin_scripts' ) );
 		add_action( 'wp_ajax_ember_drafts_for_friends', array( $this, 'admin_rest_actions' ) );
+
+		add_filter( 'the_posts', array( $this, 'the_posts_intercept') );
+		add_filter( 'posts_results', array( $this, 'posts_results_intercept') );
+	}
+
+	function plugin_install() {
+		global $wpdb;
+
+		$table_name = $wpdb->prefix . 'ember_drafts_for_friends';
+		$create_sql = "CREATE TABLE $table_name (".
+			'id bigint(20) unsigned NOT NULL AUTO_INCREMENT,'.
+			'post_id bigint(20) unsigned NOT NULL,'.
+			'user_id bigint(20) unsigned NOT NULL,'.
+			'hash varchar(32) NOT NULL DEFAULT \'\','.
+			'created_date datetime NOT NULL,'.
+			'expiration_date datetime NOT NULL,'.
+			'PRIMARY KEY (id),'.
+			'KEY post_id (post_id),'.
+			'KEY user_id (user_id),'.
+			'KEY postid_hash_expired (post_id, hash, expiration_date));';
+
+		require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+		dbDelta( $create_sql );
+
+		add_option( 'draft_for_friends_db_version', '0.1' );
+	}
+
+	function plugin_uninstall() {
+		global $wpdb;
+
+		$table_name = $wpdb->prefix . 'ember_drafts_for_friends';
+		$drop_sql = "DROP TABLE IF EXISTS $table_name";
+
+		$wpdb->query( $drop_sql );
+		delete_option( 'draft_for_friends_db_version' );
 	}
 
 	function admin_menu() {
@@ -47,9 +85,48 @@ class EmberDraftsForFriends {
 		}
 	}
 
+	function can_view( $post_id ) {
+		global $wpdb;
+		if( isset( $_GET['emberdraftsforfriends'] ) ){
+			$hash = sanitize_text_field( $_GET['emberdraftsforfriends'] );
+			$has_shares = intval( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM $wpdb->ember_drafts_for_friends WHERE post_id = %d and hash = %s AND expiration_date >= %s", intval( $post_id ), $hash, current_time( 'mysql', 1 ) ) ) );
+			return ( $has_shares === 1 );
+		}
+		return false;
+	}
+
+	function posts_results_intercept( $posts ) {
+		if ( 1 != count( $posts ) ) {
+			return $posts;
+		}
+
+		$post = $posts[0];
+		$status = get_post_status( $post );
+
+		if ( 'publish' != $status && $this->can_view( $post->ID ) ) {
+			$post->comment_status = 'closed';
+			$this->shared_post = $post;
+		}
+		return $posts;
+	}
+
+	function the_posts_intercept( $posts ) {
+		if ( empty( $posts ) && !is_null( $this->shared_post ) ) {
+			return array( $this->shared_post );
+		} else {
+			$this->shared_post = null;
+			return $posts;
+		}
+	}
+
 	function get_shared() {
 		global $wpdb, $current_user;
-		return $wpdb->get_results( $wpdb->prepare( "SELECT d.*, p.post_title AS post_title FROM $wpdb->drafts_for_friends d INNER JOIN $wpdb->posts p ON d.post_id = p.id WHERE user_id = %d", intval( $current_user->ID ) ) );
+		return $wpdb->get_results( $wpdb->prepare( "SELECT d.id, d.post_id, d.hash, CONCAT(d.created_date, ' UTC') as created_date, CONCAT(d.expiration_date, ' UTC') as expiration_date, p.post_title AS post_title FROM $wpdb->ember_drafts_for_friends d INNER JOIN $wpdb->posts p ON d.post_id = p.id WHERE user_id = %d", intval( $current_user->ID ) ) );
+	}
+
+	function get_share_by_id ( $id ) {
+		global $wpdb;
+		return $wpdb->get_row( $wpdb->prepare( "SELECT d.id, d.post_id, d.hash, CONCAT(d.created_date, ' UTC') as created_date, CONCAT(d.expiration_date, ' UTC') as expiration_date, p.post_title AS post_title FROM $wpdb->ember_drafts_for_friends d INNER JOIN $wpdb->posts p ON d.post_id = p.id WHERE d.id = %d", $id ) );
 	}
 
 	function get_drafts() {
@@ -88,8 +165,8 @@ class EmberDraftsForFriends {
 
 		$expiration_date = time() + $this->calc( $expires, $measure );
 
-		$wpdb->insert(
-			$wpdb->drafts_for_friends,
+		$result = $wpdb->insert(
+			$wpdb->ember_drafts_for_friends,
 			array(
 				'post_id'         => $post->ID,
 				'user_id'         => $current_user->ID,
@@ -107,9 +184,7 @@ class EmberDraftsForFriends {
 		);
 
 		if( $wpdb->insert_id ) {
-			return array(
-				'success' => sprintf( __( 'Shared draft for \'%s\' created.', 'draftsforfriends' ), $post->post_title )
-			);
+			return $this->get_share_by_id( $wpdb->insert_id );
 		}
 	}
 
@@ -140,20 +215,14 @@ class EmberDraftsForFriends {
 			return array( 'error' => __( 'There are no shared post to delete.', 'draftsforfriends' ) );
 		}
 
-		$result = $wpdb->delete( $wpdb->drafts_for_friends, array( 'id' => $share_id ) );
-
-		if( $result ) {
-			return array( 'success' => __( 'Shared draft deleted.', 'draftsforfriends' ) );
-		}
+		return $wpdb->delete( $wpdb->ember_drafts_for_friends, array( 'id' => $share_id ) );
 	}
 
 	function admin_rest_actions() {
 		$request_method = $_SERVER['REQUEST_METHOD'];
 
 		if ( $request_method == "GET") {
-
 			if( isset( $_GET['action'] ) && $_GET['action'] == 'ember_drafts_for_friends' ) {
-
 				if ( isset( $_GET['type'] ) ) {
 					$type = $_GET['type'];
 					switch ($type) {
@@ -166,30 +235,124 @@ class EmberDraftsForFriends {
 					}
 					wp_send_json( $result );
 				}
-
 			}
-
 		} elseif ( $request_method == "POST" ) {
+			$data = json_decode(file_get_contents("php://input"));
+			$draft = $data->draft;
 
+			$result = $this->create_shared_draft( $draft->post_id, $draft->expiration, $draft->expiration_unit );
+
+			wp_send_json( array( 'draft' => $result ) );
 		} elseif ( $request_method == "DELETE" && isset( $_GET['id'] )) {
 			$share_id = $_GET['id'];
-			wp_send_json( $this->delete_shared_draft( $share_id ) );
+			$result = $this->delete_shared_draft( $share_id );
+			wp_exit();
 		}
-
-
 	}
 
 	function render_admin_page() {
 ?>
 	<div class="wrap"></div>
 
-	<script type="text/x-handlebars" id="components/message">
+	<script type="text/x-handlebars" data-template-name="application">
+		<h2><?php _e( 'Drafts for Friends', 'draftsforfriends' ); ?></h2>
+		{{outlet}}
+	</script>
+
+	<script type="text/x-handlebars" data-template-name="index">
+		<div id="col-container">
+			<div id="col-right">
+				<div class="col-wrap">
+					{{partial "shares"}}
+				</div>
+			</div>
+			<div id="col-left">
+				<div class="col-wrap">
+					{{render "create" this}}
+				</div>
+			</div>
+		</div>
+	</script>
+
+	<script type="text/x-handlebars" data-template-name="_shares">
+
+			{{table-navigation}}
+
+			<table class="wp-list-table widefat fixed movies">
+				<thead>
+					{{table-header}}
+				</thead>
+				<tfoot>
+					{{table-header}}
+				</tfoot>
+				<tbody id="the-list">
+					{{#each drafts itemController="post"}}
+						<tr class="alternate">
+							<th scope="row" class="check-column">
+								{{input type="checkbox" name=id }}
+							</th>
+							<td class="title column-title"><a target="_blank" {{bind-attr href=share_url}}>{{post_title}}</a><span class="copied">Copied!</span>
+								<div class="row-actions">
+									<span class="copy">{{copy-to-clipboard data-clipboard-textBinding="share_url"}} | </span>
+									<span class="edit"><a {{action "extendLimit"}}><?php _e( 'Extend Limit', 'draftsforfriends' ) ;?></a> | </span>
+									<span class="delete"><a {{action "delete"}}><?php _e( 'Delete', 'draftsforfriends' ) ;?></a></span>
+								</div>
+							</td>
+							<td class="rating column-rating">{{humanize created_date}}</td>
+							<td class="director column-director">{{humanize expiration_date}}</td>
+						</tr>
+					{{else}}
+						<tr class="no-items"><td class="colspanchange" colspan="3">No shared drafts!</td></tr>
+					{{/each}}
+				</tbody>
+			</table>
+
+			{{table-navigation}}
+	</script>
+
+	<script type="text/x-handlebars" data-template-name="create">
+		<div class="form-wrap">
+			<h3><?php _e( 'Share a Draft', 'draftsforfriends' ); ?></h3>
+			<div class="form-field form-required">
+				<label for="posts"><?php _e( 'Choose a draft', 'draftsforfriends' ); ?></label>
+				{{view Ember.Select
+					name="posts"
+					classNames="posts"
+					content=posts
+					valueBinding="form.post_id"
+					optionGroupPath="post_status_category"
+					optionValuePath="content.id"
+					optionLabelPath="content.post_title"}}
+				<p><?php _e( 'The post you\'ll like to share.', 'draftsforfriends'); ?></p>
+			</div>
+			<div class="form-required">
+				<label><?php _e( 'Share it for', 'draftsforfriends' ); ?></label>
+				{{input valueBinding="form.expiration" classNames="small-text expiration" placeholder="expiration"}}
+				{{view Ember.Select
+					name="units"
+					valueBinding="form.expiration_unit"
+					content=units
+					optionValuePath="content.value"
+					optionLabelPath="content.title"
+					value="h"}}
+			</div>
+			<p class="submit">
+				<button {{action create}} class="button button-primary"><?php _e( 'Save', 'draftsforfriends' ); ?></button>
+			</p>
+		</div>
+	</script>
+
+	<script type="text/x-handlebars" data-template-name="components/copy-to-clipboard">
+		<?php _e( 'Copy to Clipboard', 'draftsforfriends' ) ;?>
+	</script>
+
+	<script type="text/x-handlebars" data-template-name="components/message">
 		<div id="message" class="updated below-h2">
 			<p>Here goes any messages</p>
 		</div>
 	</script>
 
-	<script type="text/x-handlebars" id="components/table-header">
+	<script type="text/x-handlebars" data-template-name="components/table-header">
 		<tr>
 			<th scope="col" id="cb" class="manage-column column-cb check-column" style=""><label class="screen-reader-text" for="cb-select-all-1">Select All</label><input id="cb-select-all-1" type="checkbox"></th>
 			<th scope="col" id="post" class="manage-column column-post sortable desc" style=""><a href="http://local.wordpress.dev/wp-admin/admin.php?page=tt_list_test&amp;orderby=title&amp;order=asc"><span>Post</span><span class="sorting-indicator"></span></a></th>
@@ -198,26 +361,7 @@ class EmberDraftsForFriends {
 		</tr>
 	</script>
 
-	<script type="text/x-handlebars" id="components/table-navigation">
-		<div class="alignleft actions bulkactions">
-			<select name="action">
-				<option value="-1" selected="selected">Bulk Actions</option>
-				<option value="delete">Delete</option>
-			</select>
-			<input type="submit" name="" id="doaction" class="button action" value="Apply">
-		</div>
-
-		<div class="tablenav-pages">
-			<span class="displaying-num">7 items</span>
-			<span class="pagination-links"><a class="first-page disabled" title="Go to the first page" href="http://local.wordpress.dev/wp-admin/admin.php?page=tt_list_test">«</a><a class="prev-page disabled" title="Go to the previous page" href="http://local.wordpress.dev/wp-admin/admin.php?page=tt_list_test&amp;paged=1">‹</a>
-			<span class="paging-input"><input class="current-page" title="Current page" type="text" name="paged" value="1" size="1"> of <span class="total-pages">2</span></span>
-			<a class="next-page" title="Go to the next page" href="http://local.wordpress.dev/wp-admin/admin.php?page=tt_list_test&amp;paged=2">›</a>
-			<a class="last-page" title="Go to the last page" href="http://local.wordpress.dev/wp-admin/admin.php?page=tt_list_test&amp;paged=2">»</a></span></div>
-			<br class="clear">
-		</div>
-	</script>
-
-	<script type="text/x-handlebars" id="components/table-navigation-footer">
+	<script type="text/x-handlebars" data-template-name="components/table-navigation">
 		<div class="tablenav bottom">
 
 			<div class="alignleft actions bulkactions">
@@ -243,99 +387,6 @@ class EmberDraftsForFriends {
 		</div>
 	</script>
 
-	<script type="text/x-handlebars">
-		<h2><?php _e( 'Drafts for Friends', 'draftsforfriends' ); ?></h2>
-		{{outlet}}
-	</script>
-
-	<script type="text/x-handlebars" id="index">
-		<div id="col-container">
-			<div id="col-right">
-				<div class="col-wrap">
-					<form id="movies-filter" method="get">
-						<!-- For plugins, we also need to ensure that the form posts back to our current page -->
-						<input type="hidden" name="page" value="tt_list_test">
-						<!-- Now we can render the completed list table -->
-						<input type="hidden" id="_wpnonce" name="_wpnonce" value="1a9370cd7d"><input type="hidden" name="_wp_http_referer" value="/wp-admin/admin.php?page=tt_list_test">	<div class="tablenav top">
-
-						{{table-navigation}}
-
-						<table class="wp-list-table widefat fixed movies">
-							<thead>
-								{{table-header}}
-							</thead>
-							<tfoot>
-								{{table-header}}
-							</tfoot>
-							<tbody id="the-list" data-wp-lists="list:movie">
-								{{#each drafts itemController="post"}}
-									<tr class="alternate">
-										<th scope="row" class="check-column">
-											<input type="checkbox" name="draft[]" value="{{id}}">
-										</th>
-										<td class="title column-title"><a target="_blank" {{bind-attr href="share_url"}}>{{post_title}}</a>
-											<div class="row-actions">
-												<span class="copy"><a class="copy-to-clipboard" {{bind-attr data-clipboard-text="share_url"}}><?php _e( 'Copy to Clipboard', 'draftsforfriends' ) ;?></a> | </span>
-												<span class="edit"><a {{action "extendLimit"}}><?php _e( 'Extend Limit', 'draftsforfriends' ) ;?></a> | </span>
-												<span class="delete"><a {{action "delete"}}><?php _e( 'Delete', 'draftsforfriends' ) ;?></a></span>
-											</div>
-										</td>
-										<td class="rating column-rating">{{created_date}}</td>
-										<td class="director column-director">{{expiration_date}}</td>
-									</tr>
-								{{else}}
-									<tr class="no-items"><td class="colspanchange" colspan="3">No shared drafts!</td></tr>
-								{{/each}}
-							</tbody>
-						</table>
-
-						{{table-navigation-footer}}
-					</form>
-				</div>
-			</div>
-			<div id="col-left">
-				<div class="col-wrap">
-
-
-
-					<div class="form-wrap">
-						<h3><?php _e( 'Share a Draft', 'draftsforfriends' ); ?></h3>
-						<form id="draftsforfriends-add" action="" method="post" class="validate">
-							<?php wp_nonce_field( 'draftsforfriends-add', 'draftsforfriends-add-nonce' ); ?>
-							<div class="form-field form-required">
-								<label for="posts"><?php _e( 'Choose a draft', 'draftsforfriends' ); ?></label>
-								{{view Ember.Select
-									name="posts"
-									classNames="posts"
-									valueBinding="model.post_id"
-									content=posts
-									optionGroupPath="post_status_category"
-									optionValuePath="content.id"
-									optionLabelPath="content.post_title"}}
-								<p><?php _e( 'The post you\'ll like to share.', 'draftsforfriends'); ?></p>
-							</div>
-							<div class="form-required">
-								<label><?php _e( 'Share it for', 'draftsforfriends' ); ?></label>
-								{{input valueBinding="model.expiration" classNames="small-text expiration" placeholder="expiration"}}
-								{{view Ember.Select
-									name="units"
-									valueBinding="model.unit"
-									content=units
-									optionValuePath="content.value"
-									optionLabelPath="content.title"
-									value="h"}}
-							</div>
-							<p class="submit">
-								<button {{action createDraft}} class="button button-primary"><?php _e( 'Save', 'draftsforfriends' ); ?></button>
-							</p>
-						</form>
-					</div>
-
-
-				</div>
-			</div>
-		</div>
-	</script>
 <?php
 	}
 

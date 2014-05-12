@@ -1,7 +1,7 @@
 (function (){
   'use strict';
 
-  window.ED = Ember.Application.create({
+  window.EmberDrafts = Ember.Application.create({
     rootElement: '.wrap',
     LOG_ACTIVE_GENERATION: true,
     LOG_VIEW_LOOKUPS: true,
@@ -9,18 +9,18 @@
     LOG_TRANSITIONS_INTERNAL: true
   });
 
-  ED.Router.reopen({
+  EmberDrafts.Router.reopen({
     location: 'none'
   });
 
-  ED.ApplicationAdapter = DS.RESTAdapter.extend({
+  EmberDrafts.ApplicationAdapter = DS.RESTAdapter.extend({
     host: draftsForFriends.ajax_endpoint,
     buildURL: function (type, id) {
       if(!id) {
         type = Ember.String.pluralize(type);
-        return 'http://local.wordpress.dev/wp-admin/admin-ajax.php?action=ember_drafts_for_friends&type=' + type;
+        return this.host + '?action=ember_drafts_for_friends&type=' + type;
       }
-      var url = 'http://local.wordpress.dev/wp-admin/admin-ajax.php?action=ember_drafts_for_friends&type=' + type;
+      var url = this.host + '?action=ember_drafts_for_friends&type=' + type;
       if(id) {
         url += "&id=" + id;
       }
@@ -28,106 +28,103 @@
     }
   });
 
-  ED.PostSerializer = DS.RESTSerializer.extend({
-    primaryKey: 'ID'
-  });
-
-  ED.Post = DS.Model.extend({
+  EmberDrafts.Post = DS.Model.extend({
     post_title: DS.attr('string'),
     post_status: DS.attr('string'),
     post_status_category: DS.attr('string')
   });
 
-  ED.Draft = DS.Model.extend({
+  EmberDrafts.PostSerializer = DS.RESTSerializer.extend({
+    primaryKey: 'ID'
+  });
+
+  EmberDrafts.Draft = DS.Model.extend({
     post_id: DS.attr('number'),
     user_id: DS.attr('number'),
     hash: DS.attr('string'),
     post_title: DS.attr('string'),
     created_date: DS.attr('date'),
+    expiration: DS.attr('number'),
+    expiration_unit: DS.attr('string'),
     expiration_date: DS.attr('date'),
 
     share_url: function () {
-      return draftsForFriends.ajax_endpoint + "/?p=" + this.get('post_id') + "&draftsforfriends=" + this.get('hash');
+      return draftsForFriends.blog_url + "/?p=" + this.get('post_id') + "&emberdraftsforfriends=" + this.get('hash');
     }.property('post_id', 'hash')
   });
 
-  ED.IndexRoute = Ember.Route.extend({
+  EmberDrafts.IndexRoute = Ember.Route.extend({
     model: function() {
       return Ember.RSVP.hash({
         posts: this.store.find('post'),
-        drafts: this.store.find('draft'),
-        units: Ember.RSVP.resolve([
-          {title: 'seconds', value: 's'},
-          {title: 'minutes', value: 'm'},
-          {title: 'hours', value: 'h'},
-          {title: 'days', value: 'd'}
-        ])
+        drafts: this.store.find('draft')
       });
     }
   });
 
-  ED.IndexController = Ember.ObjectController.extend({
+  EmberDrafts.CreateController = Ember.ObjectController.extend({
+    units: [
+      {title: 'seconds', value: 's'},
+      {title: 'minutes', value: 'm'},
+      {title: 'hours', value: 'h'},
+      {title: 'days', value: 'd'}
+    ],
+    form: {
+      expiration: 2,
+      expiration_unit: 'h'
+    },
     actions: {
-      createDraft: function (){
-        var model = this.get('model');
-
-        var draft = ED.Draft.create({
-          post_id: model.post_id,
-          expiration: model.expiration,
-          unit: model.unit
-        });
-
-        console.log(draft);
-        draft.save();
+      create: function (){
+        var draft = this.store.createRecord('draft', this.get('form'));
+        return draft.save();
       }
     }
   });
-
-  ED.PostController = Ember.ObjectController.extend({
+  
+  EmberDrafts.PostController = Ember.ObjectController.extend({
     actions: {
       delete: function (){
         var post = this.get('model');
         post.deleteRecord();
-        post.save();
-      },
-      extendLimit: function (){
-        
+        return post.save();
       }
     }
   });
 
-  ED.IndexView = Ember.View.extend({
-    didInsertElement: function (){
+  EmberDrafts.CopyToClipboardComponent = Ember.Component.extend({
+    tagName: 'a',
+    classNames: ['copy-to-clipboard'],
+    attributeBindings: ['data-clipboard-text'],
+    didInsertElement: function () {
       var _this = this;
-      var client = new ZeroClipboard( _this.$( '.copy-to-clipboard' ) );
+      var clip = new ZeroClipboard(this.$());
 
-      client.on( 'mouseover', function ( e ) {
-        var target = _this.$( e.target );
-        target.parents( 'div.row-actions' ).addClass('visible');
+      clip.on('mouseover', function (e) {
+        var target = _this.$(e.target);
+        target.parents('div.row-actions').addClass('visible');
       });
 
-      client.on( 'mouseout', function ( e ) {
-        var target = _this.$( e.target );
-        target.parents( 'div.row-actions' ).removeClass('visible');
+      clip.on('mouseout', function (e) {
+        var target = _this.$(e.target);
+        target.parents('div.row-actions').removeClass('visible');
       });
 
-      client.on( 'aftercopy', function ( e ) {
+      clip.on('aftercopy', function (e) {
         var target = _this.$( e.target );
-        var message = target.parents('.post_title').find('.copied');
+        var message = target.parents('.title').find('.copied');
 
-        message.addClass( 'show' );
+        message.addClass('show');
 
-        setTimeout(function (){
-          message.removeClass( 'show' );
+        Ember.run.later(function (){
+          message.removeClass('show');
         }, 1000);
-
       });
-
     }
   });
 
-  ED.CreateView = Ember.View.extend({
-    templateName: 'create'
+  Ember.Handlebars.registerBoundHelper('humanize', function(value, options) {
+    var created_date = moment(value);
+    return moment.duration(created_date.diff(moment.utc())).humanize();
   });
 
 })();
